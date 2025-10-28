@@ -1,0 +1,48 @@
+// scripts/deploy_presale.js
+const { ethers } = require("hardhat");
+const fs = require("fs");
+
+async function main() {
+  console.log("Starting TAKULAI Presale deployment...");
+
+  // Get the deployer account
+  const [deployer] = await ethers.getSigners();
+  console.log("Deploying contracts with the account:", deployer.address);
+
+  // Load contract addresses
+  const contractAddresses = JSON.parse(fs.readFileSync("./config/contract-addresses.json", "utf8"));
+  const { TAKULAI } = contractAddresses;
+
+  // Deploy the Presale contract
+  const Presale = await ethers.getContractFactory("Presale");
+  const presale = await Presale.deploy(
+    TAKULAI,
+    deployer.address // Using deployer as the wallet for simplicity
+  );
+
+  await presale.deployed();
+  console.log("Presale deployed to:", presale.address);
+
+  // Deploy the RefundManager
+  const RefundManager = await ethers.getContractFactory("RefundManager");
+  const refundManager = await RefundManager.deploy(presale.address);
+  await refundManager.deployed();
+  console.log("RefundManager deployed to:", refundManager.address);
+
+  // Update contract addresses
+  contractAddresses.Presale = presale.address;
+  contractAddresses.RefundManager = refundManager.address;
+  fs.writeFileSync(
+    "./config/contract-addresses.json",
+    JSON.stringify(contractAddresses, null, 2)
+  );
+
+  console.log("Presale deployment completed successfully!");
+}
+
+main()
+  .then(() => process.exit(0))
+  .catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
