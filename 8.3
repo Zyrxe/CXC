@@ -1,0 +1,61 @@
+// scripts/deploy_referral.js
+const { ethers } = require("hardhat");
+const fs = require("fs");
+
+async function main() {
+  console.log("Starting TAKULAI Referral deployment...");
+
+  // Get the deployer account
+  const [deployer] = await ethers.getSigners();
+  console.log("Deploying contracts with the account:", deployer.address);
+
+  // Load contract addresses
+  const contractAddresses = JSON.parse(fs.readFileSync("./config/contract-addresses.json", "utf8"));
+  const { TAKULAI, marketingWallet } = contractAddresses;
+
+  // Deploy the Referral contract
+  const Referral = await ethers.getContractFactory("Referral");
+  const referral = await Referral.deploy(marketingWallet);
+
+  await referral.deployed();
+  console.log("Referral deployed to:", referral.address);
+
+  // Deploy the ReferralReward contract
+  const ReferralReward = await ethers.getContractFactory("ReferralReward");
+  const referralReward = await ReferralReward.deploy(
+    TAKULAI,
+    referral.address,
+    marketingWallet
+  );
+
+  await referralReward.deployed();
+  console.log("ReferralReward deployed to:", referralReward.address);
+
+  // Deploy the RewardDistributor contract
+  const RewardDistributor = await ethers.getContractFactory("RewardDistributor");
+  const rewardDistributor = await RewardDistributor.deploy(
+    TAKULAI,
+    marketingWallet
+  );
+
+  await rewardDistributor.deployed();
+  console.log("RewardDistributor deployed to:", rewardDistributor.address);
+
+  // Update contract addresses
+  contractAddresses.Referral = referral.address;
+  contractAddresses.ReferralReward = referralReward.address;
+  contractAddresses.RewardDistributor = rewardDistributor.address;
+  fs.writeFileSync(
+    "./config/contract-addresses.json",
+    JSON.stringify(contractAddresses, null, 2)
+  );
+
+  console.log("Referral deployment completed successfully!");
+}
+
+main()
+  .then(() => process.exit(0))
+  .catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
