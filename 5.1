@@ -1,0 +1,77 @@
+// BuybackBurn.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/utils/math/SafeMath.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+
+contract BuybackBurn is Ownable, ReentrancyGuard {
+    using SafeMath for uint256;
+
+    IERC20 public token;
+    address public burnReserveWallet;
+    address public feeManager;
+
+    uint256 public buybackThreshold = 100 * 10**18; // 100 TKI
+    uint256 public lastBuybackTime;
+    uint256 public buybackInterval = 1 days; // 1 day between buybacks
+
+    event TokensBoughtBack(uint256 amount);
+    event TokensBurned(uint256 amount);
+    event BuybackThresholdUpdated(uint256 newThreshold);
+    event BuybackIntervalUpdated(uint256 newInterval);
+
+    constructor(
+        address _token,
+        address _burnReserveWallet,
+        address _feeManager
+    ) {
+        token = IERC20(_token);
+        burnReserveWallet = _burnReserveWallet;
+        feeManager = _feeManager;
+        lastBuybackTime = block.timestamp;
+    }
+
+    function buybackAndBurn(uint256 amount) external nonReentrant {
+        require(msg.sender == feeManager, "Only fee manager can call this function");
+        require(block.timestamp >= lastBuybackTime.add(buybackInterval), "Buyback interval not met");
+        require(amount >= buybackThreshold, "Amount below buyback threshold");
+        require(token.balanceOf(burnReserveWallet) >= amount, "Insufficient tokens in burn reserve");
+
+        // Transfer tokens from burn reserve to this contract
+        require(token.transferFrom(burnReserveWallet, address(this), amount), "Transfer failed");
+
+        // Burn the tokens
+        _burn(amount);
+
+        lastBuybackTime = block.timestamp;
+
+        emit TokensBoughtBack(amount);
+        emit TokensBurned(amount);
+    }
+
+    function _burn(uint256 amount) internal {
+        // Transfer to zero address to burn
+        require(token.transfer(address(0), amount), "Burn failed");
+    }
+
+    function setBuybackThreshold(uint256 newThreshold) external onlyOwner {
+        buybackThreshold = newThreshold;
+        emit BuybackThresholdUpdated(newThreshold);
+    }
+
+    function setBuybackInterval(uint256 newInterval) external onlyOwner {
+        buybackInterval = newInterval;
+        emit BuybackIntervalUpdated(newInterval);
+    }
+
+    function setBurnReserveWallet(address newWallet) external onlyOwner {
+        burnReserveWallet = newWallet;
+    }
+
+    function setFeeManager(address newFeeManager) external onlyOwner {
+        feeManager = newFeeManager;
+    }
+}
