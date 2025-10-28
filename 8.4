@@ -1,0 +1,70 @@
+// scripts/deploy_modules.js
+const { ethers } = require("hardhat");
+const fs = require("fs");
+
+async function main() {
+  console.log("Starting TAKULAI modules deployment...");
+
+  // Get the deployer account
+  const [deployer] = await ethers.getSigners();
+  console.log("Deploying contracts with the account:", deployer.address);
+
+  // Load contract addresses
+  const contractAddresses = JSON.parse(fs.readFileSync("./config/contract-addresses.json", "utf8"));
+  const { TAKULAI, burnReserveWallet, marketingWallet, liquidityWallet } = contractAddresses;
+
+  // Deploy the FeeManager contract
+  const FeeManager = await ethers.getContractFactory("FeeManager");
+  const feeManager = await FeeManager.deploy(
+    TAKULAI,
+    ethers.constants.AddressZero, // Will be set after BuybackBurn deployment
+    burnReserveWallet,
+    marketingWallet,
+    liquidityWallet
+  );
+
+  await feeManager.deployed();
+  console.log("FeeManager deployed to:", feeManager.address);
+
+  // Deploy the BuybackBurn contract
+  const BuybackBurn = await ethers.getContractFactory("BuybackBurn");
+  const buybackBurn = await BuybackBurn.deploy(
+    TAKULAI,
+    burnReserveWallet,
+    feeManager.address
+  );
+
+  await buybackBurn.deployed();
+  console.log("BuybackBurn deployed to:", buybackBurn.address);
+
+  // Update FeeManager with BuybackBurn address
+  await feeManager.setBuybackBurn(buybackBurn.address);
+
+  // Deploy the LiquidityManager contract
+  const LiquidityManager = await ethers.getContractFactory("LiquidityManager");
+  const liquidityManager = await LiquidityManager.deploy(
+    TAKULAI,
+    "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D" // Uniswap V2 Router address (for mainnet, use appropriate testnet address)
+  );
+
+  await liquidityManager.deployed();
+  console.log("LiquidityManager deployed to:", liquidityManager.address);
+
+  // Update contract addresses
+  contractAddresses.FeeManager = feeManager.address;
+  contractAddresses.BuybackBurn = buybackBurn.address;
+  contractAddresses.LiquidityManager = liquidityManager.address;
+  fs.writeFileSync(
+    "./config/contract-addresses.json",
+    JSON.stringify(contractAddresses, null, 2)
+  );
+
+  console.log("Modules deployment completed successfully!");
+}
+
+main()
+  .then(() => process.exit(0))
+  .catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
