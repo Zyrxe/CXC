@@ -1,0 +1,117 @@
+// Referral.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/utils/math/SafeMath.sol";
+
+contract Referral is Ownable {
+    using SafeMath for uint256;
+
+    struct ReferralNode {
+        address referrer;
+        address[] referees;
+        uint256 level;
+    }
+
+    mapping(address => ReferralNode) public referralTree;
+    mapping(address => bool) public isRegistered;
+
+    uint256 public maxReferralLevels = 3;
+    address public marketingWallet;
+
+    event ReferralRegistered(address indexed referrer, address indexed referee, uint256 level);
+    event ReferralTreeUpdated(address indexed user, address indexed newReferrer);
+
+    constructor(address _marketingWallet) {
+        marketingWallet = _marketingWallet;
+    }
+
+    function registerReferral(address _referrer) external {
+        require(!isRegistered[msg.sender], "Already registered");
+        require(_referrer != msg.sender, "Cannot refer yourself");
+        require(isRegistered[_referrer] || _referrer == marketingWallet, "Referrer not registered");
+
+        isRegistered[msg.sender] = true;
+
+        if (_referrer == marketingWallet) {
+            referralTree[msg.sender] = ReferralNode({
+                referrer: _referrer,
+                referees: new address[](0),
+                level: 1
+            });
+        } else {
+            uint256 referrerLevel = referralTree[_referrer].level;
+            require(referrerLevel < maxReferralLevels, "Referrer at max level");
+
+            referralTree[msg.sender] = ReferralNode({
+                referrer: _referrer,
+                referees: new address[](0),
+                level: referrerLevel + 1
+            });
+
+            referralTree[_referrer].referees.push(msg.sender);
+        }
+
+        emit ReferralRegistered(_referrer, msg.sender, referralTree[msg.sender].level);
+    }
+
+    function updateReferrer(address _newReferrer) external {
+        require(isRegistered[msg.sender], "Not registered");
+        require(_newReferrer != msg.sender, "Cannot refer yourself");
+        require(isRegistered[_newReferrer] || _newReferrer == marketingWallet, "New referrer not registered");
+
+        address oldReferrer = referralTree[msg.sender].referrer;
+
+        // Remove from old referrer's referees list
+        if (oldReferrer != address(0)) {
+            _removeFromRefereesList(oldReferrer, msg.sender);
+        }
+
+        // Add to new referrer's referees list
+        if (_newReferrer == marketingWallet) {
+            referralTree[msg.sender].referrer = _newReferrer;
+            referralTree[msg.sender].level = 1;
+        } else {
+            uint256 newReferrerLevel = referralTree[_newReferrer].level;
+            require(newReferrerLevel < maxReferralLevels, "New referrer at max level");
+
+            referralTree[msg.sender].referrer = _newReferrer;
+            referralTree[msg.sender].level = newReferrerLevel + 1;
+            referralTree[_newReferrer].referees.push(msg.sender);
+        }
+
+        emit ReferralTreeUpdated(msg.sender, _newReferrer);
+    }
+
+    function _removeFromRefereesList(address _referrer, address _referee) internal {
+        address[] storage referees = referralTree[_referrer].referees;
+        for (uint256 i = 0; i < referees.length; i++) {
+            if (referees[i] == _referee) {
+                referees[i] = referees[referees.length - 1];
+                referees.pop();
+                break;
+            }
+        }
+    }
+
+    function getReferrer(address _user) external view returns (address) {
+        return referralTree[_user].referrer;
+    }
+
+    function getReferees(address _user) external view returns (address[] memory) {
+        return referralTree[_user].referees;
+    }
+
+    function getLevel(address _user) external view returns (uint256) {
+        return referralTree[_user].level;
+    }
+
+    function setMaxReferralLevels(uint256 _maxLevels) external onlyOwner {
+        maxReferralLevels = _maxLevels;
+    }
+
+    function setMarketingWallet(address _marketingWallet) external onlyOwner {
+        marketingWallet = _marketingWallet;
+    }
+}
