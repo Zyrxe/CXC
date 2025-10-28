@@ -1,0 +1,146 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/utils/math/SafeMath.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+
+interface IUniswapV2Router {
+    function addLiquidityETH(
+        address token,
+        uint amountTokenDesired,
+        uint amountTokenMin,
+        uint amountETHMin,
+        address to,
+        uint deadline
+    ) external payable returns (uint amountToken, uint amountETH, uint liquidity);
+}
+
+interface IUniswapV2Factory {
+    function createPair(address tokenA, address tokenB) external returns (address pair);
+}
+
+contract LiquidityManager is Ownable, ReentrancyGuard {
+    using SafeMath for uint256;
+
+    IERC20 public token;
+    IUniswapV2Router public uniswapRouter;
+    address public uniswapPair;
+
+    uint256 public liquidityLockDuration = 180 days; // 6 months default
+    uint256 public liquidityUnlockTime;
+    bool public liquidityLocked;
+
+    event LiquidityAdded(uint256 tokenAmount, uint256 ethAmount, uint256 liquidity);
+    event LiquidityLocked(uint256 unlockTime);
+    event LiquidityUnlocked();
+    event LiquidityLockDurationUpdated(uint256 newDuration);
+
+    constructor(
+        address _token,
+        address _router
+    ) {
+        token = IERC20(_token);
+        uniswapRouter = IUniswapV2Router(_router);
+        
+        // Create pair if it doesn't exist
+        uniswapPair = IUniswapV2Factory(uniswapRouter.factory()).createPair(
+            address(token),
+            uniswapRouter.WETH()
+        );
+    }
+
+    function addLiquidity(uint256 tokenAmount, uint256 ethAmount) external payable onlyOwner nonReentrant {
+        require(msg.value >= ethAmount, "Insufficient ETH sent");
+        require(token.balanceOf(msg.sender) >= tokenAmount, "Insufficient token balance");
+
+        // Transfer tokens to this contract
+        require(token.transferFrom(msg.sender, address(this), tokenAmount), "Token transfer failed");
+
+        // Approve router to spend tokens
+        require(token.approve(address(uniswapRouter), tokenAmount), "Token approval failed");
+
+        // Add liquidity
+        (uint256 amountToken, uint256 amountETH, uint256 liquidity) = uniswapRouter.addLiquidityETH{value: ethAmount}(
+            address(token),
+            tokenAmount,
+            tokenAmount, // amountTokenMin (slippage tolerance)
+            ethAmount,   // amountETHMin (slippage tolerance)
+            address(this), // LP tokens sent to this contract
+            block.timestamp + 300 // deadline (5 minutes)
+        );
+
+        emit LiquidityAdded(amountToken, amountETH, liquidity);
+
+        // Lock liquidity automatically
+        if (!liquidityLocked) {
+            _lockLiquidity();
+        }
+
+        // Refund any excess ETH
+        if (msg.value > ethAmount) {
+            payable(msg.sender).transfer(msg.value - ethAmount);
+        }
+    }
+
+    function _lockLiquidity() internal {
+        liquidityUnlockTime = block.timestamp + liquidityLockDuration;
+        liquidityLocked = true;
+        emit LiquidityLocked(liquidityUnlockTime);
+    }
+
+    function lockLiquidity() external onlyOwner {
+        require(!liquidityLocked, "Liquidity already locked");
+        _lockLiquidity();
+    }
+
+    function unlockLiquidity() external onlyOwner {
+        require(liquidityLocked, "Liquidity not locked");
+        require(block.timestamp >= liquidityUnlockTime, "Liquidity still locked");
+        
+        liquidityLocked = false;
+        emit LiquidityUnlocked();
+    }
+
+    function removeLiquidity(uint256 liquidityAmount) external onlyOwner nonReentrant {
+        require(!liquidityLocked || block.timestamp >= liquidityUnlockTime, "Liquidity still locked");
+        
+        // This would require implementing the LP token interface and approve logic
+        // For simplicity, this is a placeholder for the actual implementation
+        // In a real contract, you would:
+        // 1. Approve the router to spend LP tokens
+        // 2. Call router.removeLiquidityETH()
+        // 3. Handle the returned tokens and ETH
+        
+        revert("Function not fully implemented");
+    }
+
+    function setLiquidityLockDuration(uint256 newDuration) external onlyOwner {
+        liquidityLockDuration = newDuration;
+        emit LiquidityLockDurationUpdated(newDuration);
+    }
+
+    function extendLiquidityLock(uint256 additionalTime) external onlyOwner {
+        require(liquidityLocked, "Liquidity not locked");
+        liquidityUnlockTime = liquidityUnlockTime + additionalTime;
+        emit LiquidityLocked(liquidityUnlockTime);
+    }
+
+    function getLiquidityUnlockTime() external view returns (uint256) {
+        return liquidityUnlockTime;
+    }
+
+    function isLiquidityLocked() external view returns (bool) {
+        return liquidityLocked;
+    }
+
+    // Emergency functions
+    function emergencyTokenWithdraw(uint256 amount) external onlyOwner {
+        require(token.transfer(msg.sender, amount), "Transfer failed");
+    }
+
+    function emergencyETHWithdraw(uint256 amount) external onlyOwner {
+        payable(msg.sender).transfer(amount);
+    }
+}
