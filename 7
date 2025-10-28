@@ -1,0 +1,91 @@
+// TAKULAI_Timelock.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/utils/math/SafeMath.sol";
+
+contract TAKULAI_Timelock is Ownable {
+    using SafeMath for uint256;
+
+    struct Timelock {
+        address beneficiary;
+        uint256 amount;
+        uint256 releaseTime;
+        bool claimed;
+    }
+
+    IERC20 public token;
+    Timelock[] public timelocks;
+    mapping(address => uint256[]) public userTimelocks;
+
+    event TimelockCreated(address indexed beneficiary, uint256 amount, uint256 releaseTime, uint256 timelockId);
+    event TokensClaimed(address indexed beneficiary, uint256 amount, uint256 timelockId);
+
+    constructor(address _token) {
+        token = IERC20(_token);
+    }
+
+    function createTimelock(
+        address _beneficiary,
+        uint256 _amount,
+        uint256 _releaseTime
+    ) external onlyOwner returns (uint256) {
+        require(_beneficiary != address(0), "Beneficiary cannot be zero address");
+        require(_amount > 0, "Amount must be greater than 0");
+        require(_releaseTime > block.timestamp, "Release time must be in the future");
+        require(token.balanceOf(msg.sender) >= _amount, "Insufficient token balance");
+
+        // Transfer tokens to this contract
+        require(token.transferFrom(msg.sender, address(this), _amount), "Transfer failed");
+
+        // Create timelock
+        Timelock memory newTimelock = Timelock({
+            beneficiary: _beneficiary,
+            amount: _amount,
+            releaseTime: _releaseTime,
+            claimed: false
+        });
+
+        uint256 timelockId = timelocks.length;
+        timelocks.push(newTimelock);
+        userTimelocks[_beneficiary].push(timelockId);
+
+        emit TimelockCreated(_beneficiary, _amount, _releaseTime, timelockId);
+        return timelockId;
+    }
+
+    function claim(uint256 _timelockId) external {
+        require(_timelockId < timelocks.length, "Invalid timelock ID");
+        Timelock storage timelock = timelocks[_timelockId];
+        require(msg.sender == timelock.beneficiary, "Not the beneficiary");
+        require(!timelock.claimed, "Tokens already claimed");
+        require(block.timestamp >= timelock.releaseTime, "Tokens not yet released");
+
+        timelock.claimed = true;
+        require(token.transfer(timelock.beneficiary, timelock.amount), "Transfer failed");
+
+        emit TokensClaimed(timelock.beneficiary, timelock.amount, _timelockId);
+    }
+
+    function getUserTimelocks(address _user) external view returns (uint256[] memory) {
+        return userTimelocks[_user];
+    }
+
+    function getTimelockInfo(uint256 _timelockId) external view returns (
+        address beneficiary,
+        uint256 amount,
+        uint256 releaseTime,
+        bool claimed
+    ) {
+        require(_timelockId < timelocks.length, "Invalid timelock ID");
+        Timelock memory timelock = timelocks[_timelockId];
+        return (
+            timelock.beneficiary,
+            timelock.amount,
+            timelock.releaseTime,
+            timelock.claimed
+        );
+    }
+}
