@@ -1,0 +1,35 @@
+// TAKULAI_Utils.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/utils/math/SafeMath.sol";
+
+library TAKULAI_Utils {
+    using SafeMath for uint256;
+
+    function calculatePercentage(uint256 amount, uint256 percentage) internal pure returns (uint256) {
+        return amount.mul(percentage).div(10000);
+    }
+
+    function calculateBurnAmount(uint256 amount, uint256 burnRate) internal pure returns (uint256) {
+        return amount.mul(burnRate).div(10000);
+    }
+
+    function calculateFeeAmount(uint256 amount, uint256 feeRate) internal pure returns (uint256) {
+        return amount.mul(feeRate).div(10000);
+    }
+
+    function calculateReward(uint256 principal, uint256 rate, uint256 periods) internal pure returns (uint256) {
+        return principal.mul(rate).div(10000).mul(periods);
+    }
+
+    function timeToMonths(uint256 timestamp) internal view returns (uint256) {
+        return timestamp.div(30 days);
+    }
+
+    function monthsToTime(uint256 months) internal pure returns (uint256) {
+        return months.mul(30 days);
+    }
+}
