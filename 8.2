@@ -1,0 +1,52 @@
+// scripts/deploy_staking.js
+const { ethers } = require("hardhat");
+const fs = require("fs");
+
+async function main() {
+  console.log("Starting TAKULAI Staking deployment...");
+
+  // Get the deployer account
+  const [deployer] = await ethers.getSigners();
+  console.log("Deploying contracts with the account:", deployer.address);
+
+  // Load contract addresses
+  const contractAddresses = JSON.parse(fs.readFileSync("./config/contract-addresses.json", "utf8"));
+  const { TAKULAI, marketingWallet } = contractAddresses;
+
+  // Deploy the Staking contract
+  const Staking = await ethers.getContractFactory("Staking");
+  const staking = await Staking.deploy(
+    TAKULAI,
+    marketingWallet
+  );
+
+  await staking.deployed();
+  console.log("Staking deployed to:", staking.address);
+
+  // Deploy the Farming contract
+  const Farming = await ethers.getContractFactory("Farming");
+  const farming = await Farming.deploy(
+    TAKULAI,
+    marketingWallet
+  );
+
+  await farming.deployed();
+  console.log("Farming deployed to:", farming.address);
+
+  // Update contract addresses
+  contractAddresses.Staking = staking.address;
+  contractAddresses.Farming = farming.address;
+  fs.writeFileSync(
+    "./config/contract-addresses.json",
+    JSON.stringify(contractAddresses, null, 2)
+  );
+
+  console.log("Staking deployment completed successfully!");
+}
+
+main()
+  .then(() => process.exit(0))
+  .catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
