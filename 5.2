@@ -1,0 +1,161 @@
+// FeeManager.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/utils/math/SafeMath.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "./BuybackBurn.sol";
+
+contract FeeManager is Ownable, ReentrancyGuard {
+    using SafeMath for uint256;
+
+    IERC20 public token;
+    BuybackBurn public buybackBurn;
+
+    // Fee rates in basis points (100 = 1%)
+    uint256 public buyFeeRate = 200; // 2% on buys
+    uint256 public sellFeeRate = 300; // 3% on sells
+    uint256 public transferFeeRate = 100; // 1% on transfers
+
+    // Fee distribution in basis points (must sum to 10000)
+    uint256 public burnReserveShare = 5000; // 50% to burn reserve
+    uint256 public marketingShare = 3000; // 30% to marketing
+    uint256 public liquidityShare = 2000; // 20% to liquidity
+
+    // Wallets
+    address public burnReserveWallet;
+    address public marketingWallet;
+    address public liquidityWallet;
+
+    // Excluded addresses
+    mapping(address => bool) public isExcludedFromFee;
+
+    event FeeCollected(address indexed from, address indexed to, uint256 amount, string feeType);
+    event FeesDistributed(uint256 burnAmount, uint256 marketingAmount, uint256 liquidityAmount);
+    event FeeRatesUpdated(uint256 buyFee, uint256 sellFee, uint256 transferFee);
+    event FeeDistributionUpdated(uint256 burnShare, uint256 marketingShare, uint256 liquidityShare);
+
+    constructor(
+        address _token,
+        address _buybackBurn,
+        address _burnReserveWallet,
+        address _marketingWallet,
+        address _liquidityWallet
+    ) {
+        token = IERC20(_token);
+        buybackBurn = BuybackBurn(_buybackBurn);
+        burnReserveWallet = _burnReserveWallet;
+        marketingWallet = _marketingWallet;
+        liquidityWallet = _liquidityWallet;
+
+        // Exclude system addresses from fees
+        isExcludedFromFee[address(this)] = true;
+        isExcludedFromFee[_burnReserveWallet] = true;
+        isExcludedFromFee[_marketingWallet] = true;
+        isExcludedFromFee[_liquidityWallet] = true;
+        isExcludedFromFee[_buybackBurn] = true;
+        isExcludedFromFee[msg.sender] = true;
+    }
+
+    function collectFee(
+        address from,
+        address to,
+        uint256 amount,
+        string memory feeType
+    ) external nonReentrant returns (uint256) {
+        require(msg.sender == address(token), "Only token contract can call this function");
+        require(!isExcludedFromFee[from] && !isExcludedFromFee[to], "Address excluded from fees");
+
+        uint256 feeRate;
+        if (keccak256(bytes(feeType)) == keccak256(bytes("buy"))) {
+            feeRate = buyFeeRate;
+        } else if (keccak256(bytes(feeType)) == keccak256(bytes("sell"))) {
+            feeRate = sellFeeRate;
+        } else if (keccak256(bytes(feeType)) == keccak256(bytes("transfer"))) {
+            feeRate = transferFeeRate;
+        } else {
+            revert("Invalid fee type");
+        }
+
+        uint256 feeAmount = amount.mul(feeRate).div(10000);
+        if (feeAmount > 0) {
+            // Transfer fee to this contract
+            require(token.transferFrom(from, address(this), feeAmount), "Fee transfer failed");
+
+            // Distribute fees
+            _distributeFees(feeAmount);
+
+            emit FeeCollected(from, to, feeAmount, feeType);
+        }
+
+        return feeAmount;
+    }
+
+    function _distributeFees(uint256 totalFee) internal {
+        uint256 burnAmount = totalFee.mul(burnReserveShare).div(10000);
+        uint256 marketingAmount = totalFee.mul(marketingShare).div(10000);
+        uint256 liquidityAmount = totalFee.mul(liquidityShare).div(10000);
+
+        if (burnAmount > 0) {
+            require(token.transfer(burnReserveWallet, burnAmount), "Burn reserve transfer failed");
+        }
+
+        if (marketingAmount > 0) {
+            require(token.transfer(marketingWallet, marketingAmount), "Marketing transfer failed");
+        }
+
+        if (liquidityAmount > 0) {
+            require(token.transfer(liquidityWallet, liquidityAmount), "Liquidity transfer failed");
+        }
+
+        emit FeesDistributed(burnAmount, marketingAmount, liquidityAmount);
+    }
+
+    function triggerBuyback(uint256 amount) external onlyOwner {
+        uint256 availableBalance = token.balanceOf(burnReserveWallet);
+        uint256 buybackAmount = amount > availableBalance ? availableBalance : amount;
+        buybackBurn.buybackAndBurn(buybackAmount);
+    }
+
+    function setFeeRates(uint256 _buyFeeRate, uint256 _sellFeeRate, uint256 _transferFeeRate) external onlyOwner {
+        require(_buyFeeRate <= 1000 && _sellFeeRate <= 1000 && _transferFeeRate <= 1000, "Fee rates too high");
+        buyFeeRate = _buyFeeRate;
+        sellFeeRate = _sellFeeRate;
+        transferFeeRate = _transferFeeRate;
+        emit FeeRatesUpdated(_buyFeeRate, _sellFeeRate, _transferFeeRate);
+    }
+
+    function setFeeDistribution(
+        uint256 _burnReserveShare,
+        uint256 _marketingShare,
+        uint256 _liquidityShare
+    ) external onlyOwner {
+        require(_burnReserveShare + _marketingShare + _liquidityShare == 10000, "Shares must sum to 100%");
+        burnReserveShare = _burnReserveShare;
+        marketingShare = _marketingShare;
+        liquidityShare = _liquidityShare;
+        emit FeeDistributionUpdated(_burnReserveShare, _marketingShare, _liquidityShare);
+    }
+
+    function excludeFromFee(address account, bool excluded) external onlyOwner {
+        isExcludedFromFee[account] = excluded;
+    }
+
+    function setBurnReserveWallet(address wallet) external onlyOwner {
+        burnReserveWallet = wallet;
+    }
+
+    function setMarketingWallet(address wallet) external onlyOwner {
+        marketingWallet = wallet;
+    }
+
+    function setLiquidityWallet(address wallet) external onlyOwner {
+        liquidityWallet = wallet;
+    }
+
+    function setBuybackBurn(address contractAddress) external onlyOwner {
+        buybackBurn = BuybackBurn(contractAddress);
+    }
+}
