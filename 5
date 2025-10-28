@@ -1,0 +1,125 @@
+// ReferralReward.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/utils/math/SafeMath.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "./Referral.sol";
+
+contract ReferralReward is Ownable, ReentrancyGuard {
+    using SafeMath for uint256;
+
+    IERC20 public rewardToken;
+    Referral public referralContract;
+    address public marketingWallet;
+
+    // Reward rates in basis points (100 = 1%)
+    mapping(uint256 => uint256) public levelRewardRates; // level => reward rate
+
+    // Track rewards to prevent double claiming
+    mapping(address => mapping(uint256 => uint256)) public claimedRewards; // user => purchaseId => amount
+
+    uint256 public nextPurchaseId = 1;
+
+    // Events
+    event RewardDistributed(address indexed referrer, address indexed referee, uint256 level, uint256 amount);
+    event RewardClaimed(address indexed referrer, uint256 amount);
+    event RewardRateUpdated(uint256 level, uint256 newRate);
+
+    constructor(
+        address _rewardToken,
+        address _referralContract,
+        address _marketingWallet
+    ) {
+        rewardToken = IERC20(_rewardToken);
+        referralContract = Referral(_referralContract);
+        marketingWallet = _marketingWallet;
+
+        // Set default reward rates
+        levelRewardRates[1] = 500; // 5% for level 1
+        levelRewardRates[2] = 300; // 3% for level 2
+        levelRewardRates[3] = 200; // 2% for level 3
+    }
+
+    function distributeRewards(address _buyer, uint256 _purchaseAmount) external nonReentrant returns (uint256) {
+        require(_purchaseAmount > 0, "Purchase amount must be greater than 0");
+
+        uint256 totalRewards = 0;
+        address currentReferrer = referralContract.getReferrer(_buyer);
+        uint256 currentLevel = 1;
+
+        // Distribute rewards up the referral chain
+        while (currentReferrer != address(0) && currentReferrer != marketingWallet && currentLevel <= 3) {
+            uint256 rewardRate = levelRewardRates[currentLevel];
+            if (rewardRate > 0) {
+                uint256 rewardAmount = _purchaseAmount.mul(rewardRate).div(10000);
+                if (rewardAmount > 0) {
+                    // Record the reward for this purchase
+                    claimedRewards[currentReferrer][nextPurchaseId] = rewardAmount;
+                    totalRewards = totalRewards.add(rewardAmount);
+
+                    emit RewardDistributed(currentReferrer, _buyer, currentLevel, rewardAmount);
+                }
+            }
+
+            // Move up the referral chain
+            currentReferrer = referralContract.getReferrer(currentReferrer);
+            currentLevel++;
+        }
+
+        // Increment purchase ID for next purchase
+        nextPurchaseId++;
+
+        return totalRewards;
+    }
+
+    function claimRewards(uint256[] calldata _purchaseIds) external nonReentrant {
+        uint256 totalClaimAmount = 0;
+
+        for (uint256 i = 0; i < _purchaseIds.length; i++) {
+            uint256 purchaseId = _purchaseIds[i];
+            uint256 rewardAmount = claimedRewards[msg.sender][purchaseId];
+
+            if (rewardAmount > 0) {
+                totalClaimAmount = totalClaimAmount.add(rewardAmount);
+                claimedRewards[msg.sender][purchaseId] = 0;
+            }
+        }
+
+        require(totalClaimAmount > 0, "No rewards to claim");
+        require(rewardToken.balanceOf(marketingWallet) >= totalClaimAmount, "Insufficient reward tokens");
+
+        // Transfer rewards from marketing wallet to user
+        require(
+            rewardToken.transferFrom(marketingWallet, msg.sender, totalClaimAmount),
+            "Reward transfer failed"
+        );
+
+        emit RewardClaimed(msg.sender, totalClaimAmount);
+    }
+
+    function setRewardRate(uint256 _level, uint256 _rate) external onlyOwner {
+        require(_level > 0 && _level <= 3, "Invalid level");
+        require(_rate <= 1000, "Rate cannot exceed 10%");
+        levelRewardRates[_level] = _rate;
+        emit RewardRateUpdated(_level, _rate);
+    }
+
+    function setMarketingWallet(address _marketingWallet) external onlyOwner {
+        marketingWallet = _marketingWallet;
+    }
+
+    function setReferralContract(address _referralContract) external onlyOwner {
+        referralContract = Referral(_referralContract);
+    }
+
+    function getPendingRewards(address _user) external view returns (uint256) {
+        uint256 pendingRewards = 0;
+        for (uint256 i = 1; i < nextPurchaseId; i++) {
+            pendingRewards = pendingRewards.add(claimedRewards[_user][i]);
+        }
+        return pendingRewards;
+    }
+}
