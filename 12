@@ -1,0 +1,534 @@
+// test/TAKULAI.test.js
+const { expect } = require("chai");
+const { ethers } = require("hardhat");
+const { BigNumber } = require("ethers");
+
+describe("TAKULAI Token", function () {
+  let TAKULAI;
+  let takulai;
+  let owner;
+  let developerWallet;
+  let presaleWallet;
+  let liquidityWallet;
+  let marketingWallet;
+  let burnReserveWallet;
+  let user1;
+  let user2;
+
+  const TOTAL_SUPPLY = ethers.utils.parseUnits("1000000000", 18);
+  const DEVELOPER_ALLOCATION = ethers.utils.parseUnits("400000000", 18);
+  const PRESALE_ALLOCATION = ethers.utils.parseUnits("250000000", 18);
+  const LIQUIDITY_ALLOCATION = ethers.utils.parseUnits("150000000", 18);
+  const MARKETING_ALLOCATION = ethers.utils.parseUnits("20000000", 18);
+  const BURN_RESERVE_ALLOCATION = ethers.utils.parseUnits("180000000", 18);
+
+  beforeEach(async function () {
+    [owner, developerWallet, presaleWallet, liquidityWallet, marketingWallet, burnReserveWallet, user1, user2] = await ethers.getSigners();
+
+    TAKULAI = await ethers.getContractFactory("TAKULAI");
+    takulai = await TAKULAI.deploy(
+      developerWallet.address,
+      presaleWallet.address,
+      liquidityWallet.address,
+      marketingWallet.address,
+      burnReserveWallet.address
+    );
+    await takulai.deployed();
+  });
+
+  describe("Deployment", function () {
+    it("Should set the right owner", async function () {
+      expect(await takulai.owner()).to.equal(owner.address);
+    });
+
+    it("Should assign the total supply to the owner", async function () {
+      const ownerBalance = await takulai.balanceOf(owner.address);
+      expect(await takulai.totalSupply()).to.equal(ownerBalance);
+    });
+
+    it("Should distribute tokens correctly", async function () {
+      expect(await takulai.balanceOf(developerWallet.address)).to.equal(DEVELOPER_ALLOCATION);
+      expect(await takulai.balanceOf(presaleWallet.address)).to.equal(PRESALE_ALLOCATION);
+      expect(await takulai.balanceOf(liquidityWallet.address)).to.equal(LIQUIDITY_ALLOCATION);
+      expect(await takulai.balanceOf(marketingWallet.address)).to.equal(MARKETING_ALLOCATION);
+      expect(await takulai.balanceOf(burnReserveWallet.address)).to.equal(BURN_RESERVE_ALLOCATION);
+    });
+
+    it("Should have correct token details", async function () {
+      expect(await takulai.name()).to.equal("TAKULAI");
+      expect(await takulai.symbol()).to.equal("TKI");
+      expect(await takulai.decimals()).to.equal(18);
+    });
+  });
+
+  describe("Transfer + Burn Mechanism", function () {
+    it("Should burn 5% of transfer amount from burn reserve", async function () {
+      // Transfer some tokens to user1
+      const transferAmount = ethers.utils.parseUnits("10000", 18);
+      await takulai.transfer(user1.address, transferAmount);
+      
+      // Transfer from user1 to user2
+      const transferAmount2 = ethers.utils.parseUnits("1000", 18);
+      const expectedBurnAmount = transferAmount2.mul(500).div(10000); // 5%
+      
+      const initialBurnReserveBalance = await takulai.balanceOf(burnReserveWallet.address);
+      const initialUser2Balance = await takulai.balanceOf(user2.address);
+      
+      await takulai.connect(user1).transfer(user2.address, transferAmount2);
+      
+      const finalBurnReserveBalance = await takulai.balanceOf(burnReserveWallet.address);
+      const finalUser2Balance = await takulai.balanceOf(user2.address);
+      
+      expect(initialBurnReserveBalance.sub(finalBurnReserveBalance)).to.equal(expectedBurnAmount);
+      expect(finalUser2Balance.sub(initialUser2Balance)).to.equal(transferAmount2);
+    });
+
+    it("Should not burn for excluded addresses", async function () {
+      // Transfer from owner (excluded) to user1
+      const transferAmount = ethers.utils.parseUnits("1000", 18);
+      const initialBurnReserveBalance = await takulai.balanceOf(burnReserveWallet.address);
+      
+      await takulai.transfer(user1.address, transferAmount);
+      
+      const finalBurnReserveBalance = await takulai.balanceOf(burnReserveWallet.address);
+      expect(initialBurnReserveBalance).to.equal(finalBurnReserveBalance);
+    });
+
+    it("Should respect max buy/sell limits", async function () {
+      // Transfer some tokens to user1
+      const transferAmount = ethers.utils.parseUnits("10000", 18);
+      await takulai.transfer(user1.address, transferAmount);
+      
+      // Try to transfer more than max buy amount
+      const maxBuyAmount = await takulai.maxBuyAmount();
+      const excessiveAmount = maxBuyAmount.add(1);
+      
+      await expect(
+        takulai.connect(user1).transfer(user2.address, excessiveAmount)
+      ).to.be.revertedWith("Transfer amount exceeds maximum limit");
+    });
+
+    it("Should respect cooldown period", async function () {
+      // Transfer some tokens to user1
+      const transferAmount = ethers.utils.parseUnits("10000", 18);
+      await takulai.transfer(user1.address, transferAmount);
+      
+      // First transfer should succeed
+      const transferAmount2 = ethers.utils.parseUnits("1000", 18);
+      await takulai.connect(user1).transfer(user2.address, transferAmount2);
+      
+      // Second transfer immediately should fail due to cooldown
+      await expect(
+        takulai.connect(user1).transfer(user2.address, transferAmount2)
+      ).to.be.revertedWith("Transfer in cooldown period");
+    });
+  });
+
+  describe("Owner Functions", function () {
+    it("Should allow owner to top up burn reserve", async function () {
+      const topUpAmount = ethers.utils.parseUnits("1000", 18);
+      
+      // Transfer some tokens to marketing wallet for testing
+      await takulai.transfer(marketingWallet.address, topUpAmount);
+      
+      const initialBurnReserveBalance = await takulai.balanceOf(burnReserveWallet.address);
+      await takulai.topUpBurnReserve(topUpAmount);
+      
+      const finalBurnReserveBalance = await takulai.balanceOf(burnReserveWallet.address);
+      expect(finalBurnReserveBalance.sub(initialBurnReserveBalance)).to.equal(topUpAmount);
+    });
+
+    it("Should allow owner to update burn rate", async function () {
+      const newBurnRate = 300; // 3%
+      await takulai.updateBurnRate(newBurnRate);
+      expect(await takulai.burnRate()).to.equal(newBurnRate);
+    });
+
+    it("Should allow owner to update max buy/sell amounts", async function () {
+      const newMaxBuyAmount = ethers.utils.parseUnits("10000", 18);
+      const newMaxSellAmount = ethers.utils.parseUnits("2000", 18);
+      
+      await takulai.updateMaxBuyAmount(newMaxBuyAmount);
+      await takulai.updateMaxSellAmount(newMaxSellAmount);
+      
+      expect(await takulai.maxBuyAmount()).to.equal(newMaxBuyAmount);
+      expect(await takulai.maxSellAmount()).to.equal(newMaxSellAmount);
+    });
+
+    it("Should allow owner to update cooldown period", async function () {
+      const newCooldownPeriod = 120; // 2 minutes
+      await takulai.updateCooldownPeriod(newCooldownPeriod);
+      expect(await takulai.cooldownPeriod()).to.equal(newCooldownPeriod);
+    });
+
+    it("Should allow owner to exclude addresses from limits and burn", async function () {
+      await takulai.excludeFromLimits(user1.address, true);
+      await takulai.excludeFromBurn(user1.address, true);
+      
+      expect(await takulai.isExcludedFromLimits(user1.address)).to.be.true;
+      expect(await takulai.isExcludedFromBurn(user1.address)).to.be.true;
+    });
+  });
+});
+
+describe("Staking Contract", function () {
+  let Staking;
+  let staking;
+  let TAKULAI;
+  let takulai;
+  let owner;
+  let marketingWallet;
+  let user1;
+  let user2;
+
+  const STAKING_AMOUNT = ethers.utils.parseUnits("1000", 18);
+  const MONTHLY_REWARD_RATE = 500; // 5% in basis points
+
+  beforeEach(async function () {
+    [owner, marketingWallet, user1, user2] = await ethers.getSigners();
+
+    // Deploy token
+    TAKULAI = await ethers.getContractFactory("TAKULAI");
+    takulai = await TAKULAI.deploy(
+      owner.address,
+      owner.address,
+      owner.address,
+      marketingWallet.address,
+      owner.address
+    );
+    await takulai.deployed();
+
+    // Deploy staking contract
+    Staking = await ethers.getContractFactory("Staking");
+    staking = await Staking.deploy(takulai.address, marketingWallet.address);
+    await staking.deployed();
+
+    // Transfer tokens to users for testing
+    await takulai.transfer(user1.address, STAKING_AMOUNT.mul(10));
+    await takulai.transfer(marketingWallet.address, STAKING_AMOUNT.mul(10));
+
+    // Approve staking contract to spend user tokens
+    await takulai.connect(user1).approve(staking.address, STAKING_AMOUNT.mul(10));
+    
+    // Approve staking contract to spend marketing wallet tokens for rewards
+    await takulai.connect(marketingWallet).approve(staking.address, STAKING_AMOUNT.mul(10));
+  });
+
+  describe("Staking", function () {
+    it("Should allow users to stake tokens", async function () {
+      await staking.connect(user1).stake(STAKING_AMOUNT, 3); // 3 months
+      
+      const stakes = await staking.stakes(user1.address);
+      expect(stakes.length).to.equal(1);
+      expect(stakes[0].amount).to.equal(STAKING_AMOUNT);
+      expect(stakes[0].lockPeriod).to.equal(3);
+      expect(stakes[0].rewardRate).to.equal(MONTHLY_REWARD_RATE);
+      expect(stakes[0].claimed).to.be.false;
+    });
+
+    it("Should calculate rewards correctly", async function () {
+      await staking.connect(user1).stake(STAKING_AMOUNT, 3); // 3 months
+      
+      // Fast forward time by 3 months
+      await ethers.provider.send("evm_increaseTime", [3 * 30 * 24 * 60 * 60]);
+      await ethers.provider.send("evm_mine");
+      
+      const expectedReward = STAKING_AMOUNT.mul(3).mul(MONTHLY_REWARD_RATE).div(10000);
+      const calculatedReward = await staking.calculateReward(user1.address, 0);
+      
+      expect(calculatedReward).to.equal(expectedReward);
+    });
+
+    it("Should allow users to unstake after lock period", async function () {
+      await staking.connect(user1).stake(STAKING_AMOUNT, 1); // 1 month
+      
+      // Fast forward time by 1 month
+      await ethers.provider.send("evm_increaseTime", [30 * 24 * 60 * 60]);
+      await ethers.provider.send("evm_mine");
+      
+      const initialUserBalance = await takulai.balanceOf(user1.address);
+      await staking.connect(user1).unstake(0);
+      
+      const finalUserBalance = await takulai.balanceOf(user1.address);
+      const expectedReward = STAKING_AMOUNT.mul(1).mul(MONTHLY_REWARD_RATE).div(10000);
+      
+      expect(finalUserBalance.sub(initialUserBalance)).to.equal(STAKING_AMOUNT.add(expectedReward));
+    });
+
+    it("Should not allow unstaking before lock period", async function () {
+      await staking.connect(user1).stake(STAKING_AMOUNT, 3); // 3 months
+      
+      await expect(
+        staking.connect(user1).unstake(0)
+      ).to.be.revertedWith("Stake is still locked");
+    });
+
+    it("Should allow claiming rewards without unstaking", async function () {
+      await staking.connect(user1).stake(STAKING_AMOUNT, 3); // 3 months
+      
+      // Fast forward time by 1 month
+      await ethers.provider.send("evm_increaseTime", [30 * 24 * 60 * 60]);
+      await ethers.provider.send("evm_mine");
+      
+      const initialUserBalance = await takulai.balanceOf(user1.address);
+      await staking.connect(user1).claimReward(0);
+      
+      const finalUserBalance = await takulai.balanceOf(user1.address);
+      const expectedReward = STAKING_AMOUNT.mul(1).mul(MONTHLY_REWARD_RATE).div(10000);
+      
+      expect(finalUserBalance.sub(initialUserBalance)).to.equal(expectedReward);
+    });
+  });
+});
+
+describe("Presale Contract", function () {
+  let Presale;
+  let presale;
+  let TAKULAI;
+  let takulai;
+  let owner;
+  let user1;
+  let user2;
+
+  const TOKEN_PRICE = ethers.utils.parseUnits("12.59", 8); // $12.59 in USD (8 decimals)
+  const SOFT_CAP = ethers.utils.parseUnits("5000000", 8); // $5,000,000 in USD
+  const HARD_CAP = ethers.utils.parseUnits("20000000", 8); // $20,000,000 in USD
+  const MIN_CONTRIBUTION = ethers.utils.parseUnits("100", 8); // $100 minimum
+  const MAX_CONTRIBUTION = ethers.utils.parseUnits("100000", 8); // $100,000 maximum
+
+  beforeEach(async function () {
+    [owner, user1, user2] = await ethers.getSigners();
+
+    // Deploy token
+    TAKULAI = await ethers.getContractFactory("TAKULAI");
+    takulai = await TAKULAI.deploy(
+      owner.address,
+      owner.address,
+      owner.address,
+      owner.address,
+      owner.address
+    );
+    await takulai.deployed();
+
+    // Deploy presale contract
+    Presale = await ethers.getContractFactory("Presale");
+    presale = await Presale.deploy(takulai.address, owner.address);
+    await presale.deployed();
+
+    // Transfer presale allocation to presale contract
+    const presaleAllocation = ethers.utils.parseUnits("250000000", 18);
+    await takulai.transfer(presale.address, presaleAllocation);
+  });
+
+  describe("Contributions", function () {
+    it("Should accept contributions within limits", async function () {
+      const contributionAmount = ethers.utils.parseEther("1"); // 1 ETH
+      
+      await presale.connect(user1).contribute({ value: contributionAmount });
+      
+      expect(await presale.contributions(user1.address)).to.equal(contributionAmount);
+      expect(await presale.totalRaised()).to.equal(contributionAmount);
+    });
+
+    it("Should reject contributions below minimum", async function () {
+      const contributionAmount = ethers.utils.parseEther("0.01"); // 0.01 ETH
+      
+      await expect(
+        presale.connect(user1).contribute({ value: contributionAmount })
+      ).to.be.revertedWith("Contribution below minimum");
+    });
+
+    it("Should reject contributions above maximum", async function () {
+      const contributionAmount = ethers.utils.parseEther("1000"); // 1000 ETH
+      
+      await expect(
+        presale.connect(user1).contribute({ value: contributionAmount })
+      ).to.be.revertedWith("Contribution exceeds maximum");
+    });
+
+    it("Should calculate token allocation correctly", async function () {
+      const contributionAmount = ethers.utils.parseEther("1"); // 1 ETH
+      const expectedTokens = contributionAmount.mul(10**18).div(TOKEN_PRICE);
+      
+      await presale.connect(user1).contribute({ value: contributionAmount });
+      
+      expect(await presale.tokenAllocations(user1.address)).to.equal(expectedTokens);
+    });
+  });
+
+  describe("Vesting", function () {
+    it("Should not allow claiming tokens before vesting period", async function () {
+      const contributionAmount = ethers.utils.parseEther("1"); // 1 ETH
+      
+      await presale.connect(user1).contribute({ value: contributionAmount });
+      await presale.endPresale();
+      
+      await expect(
+        presale.connect(user1).claimTokens()
+      ).to.be.revertedWith("Vesting period has not started yet");
+    });
+
+    it("Should allow claiming tokens after vesting period", async function () {
+      const contributionAmount = ethers.utils.parseEther("1"); // 1 ETH
+      
+      await presale.connect(user1).contribute({ value: contributionAmount });
+      await presale.endPresale();
+      
+      // Fast forward time by 1 year
+      await ethers.provider.send("evm_increaseTime", [365 * 24 * 60 * 60]);
+      await ethers.provider.send("evm_mine");
+      
+      const initialUserBalance = await takulai.balanceOf(user1.address);
+      await presale.connect(user1).claimTokens();
+      
+      const finalUserBalance = await takulai.balanceOf(user1.address);
+      const expectedTokens = contributionAmount.mul(10**18).div(TOKEN_PRICE);
+      
+      expect(finalUserBalance.sub(initialUserBalance)).to.equal(expectedTokens);
+    });
+  });
+
+  describe("Presale Management", function () {
+    it("Should end presale and determine success based on soft cap", async function () {
+      // Contribute less than soft cap
+      const contributionAmount = ethers.utils.parseEther("1"); // 1 ETH
+      await presale.connect(user1).contribute({ value: contributionAmount });
+      
+      await presale.endPresale();
+      
+      expect(await presale.presaleEnded()).to.be.true;
+      expect(await presale.presaleSuccessful()).to.be.false;
+    });
+
+    it("Should allow refunds if presale is unsuccessful", async function () {
+      // Contribute less than soft cap
+      const contributionAmount = ethers.utils.parseEther("1"); // 1 ETH
+      await presale.connect(user1).contribute({ value: contributionAmount });
+      
+      await presale.endPresale();
+      
+      const initialUserBalance = await ethers.provider.getBalance(user1.address);
+      await presale.connect(user1).refund();
+      
+      const finalUserBalance = await ethers.provider.getBalance(user1.address);
+      // Account for gas costs
+      expect(finalUserBalance.gt(initialUserBalance)).to.be.true;
+    });
+  });
+});
+
+describe("Referral System", function () {
+  let Referral;
+  let referral;
+  let ReferralReward;
+  let referralReward;
+  let TAKULAI;
+  let takulai;
+  let owner;
+  let marketingWallet;
+  let user1;
+  let user2;
+  let user3;
+
+  beforeEach(async function () {
+    [owner, marketingWallet, user1, user2, user3] = await ethers.getSigners();
+
+    // Deploy token
+    TAKULAI = await ethers.getContractFactory("TAKULAI");
+    takulai = await TAKULAI.deploy(
+      owner.address,
+      owner.address,
+      owner.address,
+      marketingWallet.address,
+      owner.address
+    );
+    await takulai.deployed();
+
+    // Deploy referral contract
+    Referral = await ethers.getContractFactory("Referral");
+    referral = await Referral.deploy(marketingWallet.address);
+    await referral.deployed();
+
+    // Deploy referral reward contract
+    ReferralReward = await ethers.getContractFactory("ReferralReward");
+    referralReward = await ReferralReward.deploy(
+      takulai.address,
+      referral.address,
+      marketingWallet.address
+    );
+    await referralReward.deployed();
+
+    // Transfer tokens to marketing wallet for rewards
+    await takulai.transfer(marketingWallet.address, ethers.utils.parseUnits("100000", 18));
+    await takulai.connect(marketingWallet).approve(referralReward.address, ethers.utils.parseUnits("100000", 18));
+  });
+
+  describe("Referral Registration", function () {
+    it("Should allow users to register with a referrer", async function () {
+      await referral.connect(user2).registerReferral(user1.address);
+      
+      expect(await referral.getReferrer(user2.address)).to.equal(user1.address);
+      expect(await referral.getLevel(user2.address)).to.equal(1);
+    });
+
+    it("Should build a multi-level referral tree", async function () {
+      // User2 refers to User1
+      await referral.connect(user2).registerReferral(user1.address);
+      
+      // User3 refers to User2
+      await referral.connect(user3).registerReferral(user2.address);
+      
+      expect(await referral.getReferrer(user2.address)).to.equal(user1.address);
+      expect(await referral.getReferrer(user3.address)).to.equal(user2.address);
+      expect(await referral.getLevel(user2.address)).to.equal(1);
+      expect(await referral.getLevel(user3.address)).to.equal(2);
+    });
+
+    it("Should not allow self-referral", async function () {
+      await expect(
+        referral.connect(user1).registerReferral(user1.address)
+      ).to.be.revertedWith("Cannot refer yourself");
+    });
+  });
+
+  describe("Referral Rewards", function () {
+    beforeEach(async function () {
+      // Set up referral chain: user1 -> user2 -> user3
+      await referral.connect(user2).registerReferral(user1.address);
+      await referral.connect(user3).registerReferral(user2.address);
+    });
+
+    it("Should distribute rewards to referrers", async function () {
+      const purchaseAmount = ethers.utils.parseUnits("1000", 18);
+      
+      // User3 makes a purchase
+      await referralReward.distributeRewards(user3.address, purchaseAmount);
+      
+      // Check rewards
+      const level1Reward = purchaseAmount.mul(500).div(10000); // 5% for level 1
+      const level2Reward = purchaseAmount.mul(300).div(10000); // 3% for level 2
+      
+      const pendingRewardsUser1 = await referralReward.getPendingRewards(user1.address);
+      const pendingRewardsUser2 = await referralReward.getPendingRewards(user2.address);
+      
+      expect(pendingRewardsUser1).to.equal(level2Reward);
+      expect(pendingRewardsUser2).to.equal(level1Reward);
+    });
+
+    it("Should allow claiming rewards", async function () {
+      const purchaseAmount = ethers.utils.parseUnits("1000", 18);
+      
+      // User3 makes a purchase
+      await referralReward.distributeRewards(user3.address, purchaseAmount);
+      
+      // User2 claims rewards
+      const initialUser2Balance = await takulai.balanceOf(user2.address);
+      await referralReward.connect(user2).claimRewards([1]); // Purchase ID 1
+      
+      const finalUser2Balance = await takulai.balanceOf(user2.address);
+      const expectedReward = purchaseAmount.mul(500).div(10000); // 5% for level 1
+      
+      expect(finalUser2Balance.sub(initialUser2Balance)).to.equal(expectedReward);
+    });
+  });
+});
